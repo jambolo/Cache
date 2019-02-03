@@ -1,392 +1,396 @@
-/** @file *//********************************************************************************************************
-
-                                                       Cache.h
-
-						                    Copyright 2004, John J. Bolton
-	--------------------------------------------------------------------------------------------------------------
-
-	$Header: //depot/Libraries/Cache/Cache.h#9 $
-
-	$NoKeywords: $
-
- ********************************************************************************************************************/
-
 #pragma once
 
-#include <map>
-#include <algorithm>
-#include <boost/noncopyable.hpp>
+#if !defined(CACHE_CACHE_H)
+#define CACHE_CACHE_H
 
-//! A generic cache element
-//
-//! This struct is used by the cache to store the data. It should not be used directly.
+#include <map>
+
+//! An entry in the generic cache.
+//!
+//! This is used internally by the cache to store the data. It should not be used directly.
 //!
 //! @internal
 
-template < typename _Ty >
-struct _Cache_element
+template <typename T>
+struct CacheEntry
 {
-	typedef _Ty		Value;
-
-	bool	locked;		// True if the element is locked in the cache
-	bool	dirty;		// True if the element is not synchronized.
-	bool	prefetched;	// True if the element is being prefetched
-	Value	value;		// Element value
-
-	_Cache_element() {}
-	_Cache_element( bool locked_, bool dirty_, bool prefetched_, Value const & value_ )
-		: locked( locked_ ),
-		dirty( dirty_ ),
-		prefetched( prefetched_ ),
-		value( value_ )
-	{
-	}
+    T    value;         // Value
+    bool locked;        // True if the entry is locked in the cache
+    bool dirty;         // True if the entry's value has been updated.
+#if defined(FEATURE_ASYNCHRONOUS)
+    bool prefetched;    // True if the entry is being prefetched
+#endif
 };
 
-//! A generic cache proxy
-//
-//! This generic cache is a proxy for some sort of dataset. The cache provides a method for accessing
-//! the values in the dataset using a key whose form is completely determined by the user. The cache is a
+//! A generic cached proxy.
+//!
+//! This generic cache is a proxy for some source of data. The cache provides a method for accessing
+//! the values in the source using a key whose form is completely determined by the user. The cache is a
 //! write-back cache and uses fully associative mapping. 
 //!
 //! The cache also provides support methods: a method to flush a value, a method to prevent an value from being
-//! flushed, and a method that pre-fetches an value from the dataset. Pre-fetch is asynchronous (in contrast
+//! flushed, and a method that pre-fetches an value from the source. Pre-fetch is asynchronous (in contrast
 //! the normal accessor, which blocks until the value is in the cache).
 //!
-//!	@param	_Kty		Type of the key used to reference a value in the cache.
-//! @param	_Ty			Type of value contained in the cache
-//! @param	_Pr			Functor used to sort the values in the cache. Default: std::less< _Kty >
-//! @param	_Alloc		Functor used by the cache's container to allocate container nodes.
-//!							Default: std::allocator< std::pair< _Kty, _Cache_element< _Ty > > >
+//! @param  Key         Type of the key used to reference a value in the cache.
+//! @param  Value,           Type of value contained in the cache
+//! @param  Compare     Used to sort the values in the cache. Default: std::less<Key>
+//! @param  Allocator   Used by the cache's container to allocate container nodes.
+//!                     Default: std::allocator<std::pair<Key, CacheEntry<Value>>>
 //!
-//! @note		This class is an abstract base class. The following methods must be overridden:
-//!					- Cache<>::Read
-//!					- Cache<>::Write
-//!					- Cache<>::IsFull
-//!					- Cache<>::Condemn
-//!					- Cache<>::AsyncRead
-//!					- Cache<>::WaitForAsyncRead
+//! @note   This class is an abstract base class. The following methods must be overridden:
+//!             - read
+//!             - write
+//!             - full
+//!             - condemn
+//!             - readAsync
+//!             - waitForAsyncRead
 
-template< typename _Kty,
-		  typename _Ty,
-		  typename _Pr			= std::less< _Kty >,
-		  typename _Alloc		= std::allocator< std::pair< _Kty const, _Cache_element< _Ty > > > >
+template< typename Key,
+          typename Value,
+          typename Compare   = std::less<Key>,
+          typename Allocator = std::allocator<std::pair<Key const, CacheEntry<Value>>> >
 class Cache
-		: public boost::noncopyable
 {
 public:
 
-	typedef _Kty					Key;
-	typedef _Ty						Value;
-	typedef _Pr						Comparator;
-	typedef _Alloc					Allocator;
-	typedef _Cache_element< _Ty >	Element;
+    using key_type = Key;
+    using value_type = Value;
+    using compare_type = Compare;
+    using allocator_type = Allocator;
 
-	//! Destructor
-	virtual	~Cache()
-	{
-		Clear();
-	}
+    using Entry = CacheEntry<value_type>;
 
-	//! Returns @c true if the cache is empty
-	//
-	//!
-	//! @return		@c true if the cache is empty
+    //! Constructor.
+    Cache() = default;
 
-	bool IsEmpty() const
-	{
-		return m_Container.empty();
-	}
+    //! Destructor.
+    virtual ~Cache()
+    {
+        clear();
+    }
 
-	//! Returns the number of values in the cache
-	//
-	//!
-	//! @return		number of values in the cache
+    //! Accesses a value in the cache.
+    //!
+    //! If the value is not in the cache, it is loaded into the cache first.
+    //!
+    //! @param    key        The value to access
+    //!
+    //! @note    If the value does not exist, it is created.
+    value_type & operator[]( key_type const & key )
+    {
+        Entry & entry = get( key );
+        return entry.value;
+    }
 
-	int Count() const
-	{
-		return (int)m_Container.size();
-	}
-	
-	//! Flushes a value in the cache
-	//
-	//! This function writes out a value if it has been changed. The value remains in the cache after being
-	//! flushed.
-	//!
-	//! @param	key		The value to flush
-	//!
-	//! @note	If the value is not in the cache, it is loaded into the cache first.
-	//! @note	If the value does not exist, it is created.
+    //! Accesses a value in the cache.
+    //!
+    //! If the value is not in the cache, it is loaded into the cache first.
+    //!
+    //! @param    key        The value to access
+    //!
+    //! @note    If the value does not exist, it is created.
+    value_type operator[]( key_type const & key ) const
+    {
+        Entry & entry = get( key );
+        return entry.value;
+    }
 
-	void Flush( Key const & key )
-	{
-		Element &	element	= Get( key );
+    //! Returns true if the cache is empty.
+    bool empty() const
+    {
+        return container_.empty();
+    }
 
-		// If the element is dirty, write it out and mark it as not dirty.
-		
-		if ( element.dirty )
-		{
-			Write( key, element.value );
-			element.dirty = false;
-		}
-	}
+    //! Returns the number of values in the cache.
+    int count() const
+    {
+        return (int)container_.size();
+    }
 
-	//! Locks a value in the cache
-	//
-	//! This function prevents an value from being discarded from the cache before any unlocked values. It does
-	//! not guarantee that the value will never be discarded from the cache.
-	//!
-	//! @param	key		The value to lock
-	//! @param	lock	The new lock setting. Default: true
-	//!
-	//! @note	If the value is not in the cache, it is loaded into the cache first.
-	//! @note	If the value does not exist, it is created.
+    //! Flushes a value in the cache.
+    //!
+    //! This function writes out a value to the source if it has been marked as dirty.
+    //!
+    //! @param    key   Which value to flush
+    //!
+    void flush( key_type const & key )
+    {
+        typename Container::iterator p = container_.find( key ); // Point to the value in the cache
+        if (p != container_.end())
+            flush(p);
+    }
 
-	void Lock( Key const & key, bool lock = true )
-	{
-		Element &	element	= Get( key );
+    //! Flushes the entire cache.
+    //!
+    //! This function writes back all values to the source that have been marked as dirty.
+    void flush()
+    {
+        for (typename Container::iterator p = container_.begin(); p != container_.end(); ++p)
+        {
+            flush(p);
+        }
+    }
 
-		element.locked = lock;
-	}
+    //! Locks a value in the cache.
+    //!
+    //! This function prevents an value from being removed from the cache before any unlocked values. It does
+    //! not guarantee that the value will never be removed from the cache.
+    //!
+    //! @param  key         The key of the value to mark
+    //! @param  locked      The new lock setting. Default: true
+    //!
+    //! @note    If the value is not in the cache, it is loaded into the cache first.
+    void lock( key_type const & key, bool locked = true )
+    {
+        Entry &    entry    = get( key );
+        entry.locked = locked;
+    }
 
-	//! Prefetches a value
-	//
-	//! This function loads an value into the cache asynchronously. Normally, if a value is not in the cache,
-	//! it is loaded when it is accessed, and the accessor waits until the value is loaded before continuing.
-	//!
-	//! @param	key		The value to prefetch
+    //! Marks a value as dirty.
+    //!
+    //! A dirty value is eventually written back to the source.
+    //!
+    //! @param  key     The key of the value to mark
+    //!
+    //! @note    If the value is not in the cache, it is loaded into the cache first.
+    void dirty( key_type const & key )
+    {
+        Entry & entry = get( key );
+        entry.dirty = true;
+    }
 
-	void Prefetch( Key const & key )
-	{
-		Container::iterator	it	= m_Container.find( key );		// Point to the value in the cache
+    //! Marks a value as invalid.
+    //!
+    //! An invalid value is out-of-date w.r.t. the source.
+    //!
+    //! @param  key     The key of the value to mark
+    //!
+    //! @warning    Invalidating a value marked as dirty results in a loss
+    void invalidate( key_type const & key )
+    {
+        // Instead of being marked, the value is just removed from the cache, forcing it to be loaded from the source
+        // the next time it is accessed.
 
-		// If the value or its stand-in is not already in the cache, then get it from the dataset
+        typename Container::iterator const    p    = container_.find( key );
+        if ( p != container_.end() )
+        {
+            assert(!p->second.dirty); // Invalidating dirty data results in a loss
+            container_.erase(p);
+        }
+    }
 
-		if ( it == m_Container.end() )
-		{
-			it = Insert( key, Value(), true );
-			AsyncRead( key, &it->second.value );
-		}
-	}
+    //! Removes a value from the cache.
+    //!
+    //! If the value is marked as dirty, it is written back to the source first. If the value is not in the cache,
+    //! nothing happens.
+    //!
+    //! @param    key        The value to remove
+    void purge( key_type const & key )
+    {
+        typename Container::iterator const    p    = container_.find( key );
+        if ( p != container_.end() )
+        {
+            purge( p );
+        }
+    }
 
-	//! Marks an value as dirty
-	//
-	//! A dirty value is written back to the dataset when it is discarded from the cache.
-	//!
-	//! @param	key		The value to mark
-	//!
-	//! @note	If the value does not exist, it is created.
+    //! Purges all values in the cache.
+    //!
+    //! Any values that are marked as dirty are written back to the source first.
+    //!
+    void clear()
+    {
+        for ( typename Container::iterator p = container_.begin(); p != container_.end(); ++p )
+        {
+            purge( p );
+        }
+    }
 
-	void Invalidate( Key const & key )
-	{
-		Element &	element	= Get( key );
+#if defined(FEATURE_ASYNCHRONOUS)
+    //! Prefetches a value.
+    //!
+    //! This function loads a value into the cache asynchronously. Normally, if a value is not in the cache,
+    //! it is loaded when it is accessed, and the accessor waits until the value is loaded before continuing.
+    //!
+    //! @param    key        The value to prefetch
+    void prefetch( key_type const & key )
+    {
+        typename Container::iterator p = container_.find( key ); // Point to the value in the cache
 
-		element.dirty = true;
-	}
-
-	//! Accesses a value in the dataset through the cache
-	//
-	//! If the value is not in the cache, it is loaded into the cache first.
-	//!
-	//! @param	key		The value to access
-	//!
-	//! @note	If the value does not exist, it is created.
-
-	Value & operator[]( Key const & key )
-	{
-		Element &	element	= Get( key );
-
-		return element.value;
-	}
-
-	//! Discards a value from the cache
-	//
-	//! If the value is "dirty", it is written back first. If the value is not in the cache, nothing happens.
-	//!
-	//! @param	key		The value to discard
-
-	void Discard( Key const & key )
-	{
-		Container::iterator const	it	= m_Container.find( key );
-
-		if ( it != m_Container.end() )
-		{
-			Discard( it );
-		}
-	}
-
-	//! Discards all values in the cache
-	//
-	//! Any values that are "dirty" are written back to the dataset first.
-	//!
-	
-	void Clear()
-	{
-		for ( Container::iterator it = m_Container.begin(); it != m_Container.end(); ++it )
-		{
-            Discard( it );
-		}
-	}
+        // If the value or its stand-in is not already in the cache, then get it from the source
+        if ( p == container_.end() )
+        {
+            p = insert( key, value_type(), true );
+            asyncRead( key, &p->second.value );
+        }
+    }
+#endif // defined(FEATURE_ASYNCHRONOUS)
 
 protected:
 
-	typedef std::map< Key, Element, Comparator, Allocator >		Container;
+    typedef std::map< key_type, Entry, compare_type, allocator_type >        Container;
 
-	//! Returns the cache's underlying container
-	Container & GetContainer() { return m_Container; }
+    //! Returns the cache's underlying container.
+    Container & container() { return container_; }
 
-	//! Returns the cache's underlying container
-	Container const & GetContainer() const { return m_Container; }
+    //! Returns the cache's underlying container.
+    Container const & container() const { return container_; }
 
-	//! Returns @c true if the cache has enough room to hold the value
-	//
-	//! @param	key		The value being added to the cache
-	//!
-	//! @return		@c true if the cache is full
-	//!
-	//! @note	This function must be overridden.
+    //! Returns true if the cache has enough room to hold the value.
+    //!
+    //! @param  key     The value being added to the cache
+    //!
+    //! @return     true if the cache is full
+    //!
+    //! @note    This function must be overridden.
+    virtual bool full( key_type const & key ) const = 0;
 
-	virtual bool IsFull( Key const & key ) const = 0;
+    //! Returns a value from the source.
+    //!
+    //! @param  key     Which value to retrieve
+    //!
+    //! @return     Value retrieved from the source
+    //!
+    //! @note    This function must be overridden.
+    //! @note    If the value doesn't exist in the source, it must be created.
+    virtual value_type read( key_type const & key ) const = 0;
 
-	//! Returns a value from the dataset
-	//
-	//! @param	key		Which value to retrieve
-	//!
-	//! @return		Value retrieved from the dataset
-	//!
-	//! @note	This function must be overridden.
-	//! @note	If the value doesn't exist in the dataset, it is created.
+    //! Writes a value to the source.
+    //!
+    //! @param  key     Which value to write
+    //! @param  value   Value to write
+    //!
+    //! @note    This function must be overridden
+    virtual void write( key_type const & key, value_type const & value ) const = 0;
 
-	virtual Value & Read( Key const & key ) const = 0;
+    //! Returns an iterator pointing to the entry in the cache with the lowest priority.
+    //!
+    //! The cache uses this function to determine which entry to overwrite when a value is being inserted and
+    //! the cache is full. Note that the priority of any entry whose locked member is true is higher than every
+    //! entry whose locked member is false.
+    //!
+    //! @param  hint    Key of the value being inserted into the cache. The function can use this value to help
+    //!                 determine which value to overwrite.
+    //!
+    //! @note    This function must be overridden
+    virtual typename Container::iterator condemn( key_type const & hint ) = 0;
 
-	//! Writes a value to the dataset
-	//
-	//! @param	key		Which value to write
-	//! @param	value	Value to write
-	//!
-	//! @note	This function must be overridden
+#if defined(FEATURE_ASYNCHRONOUS)
+    //! Retrieves a value from the source, but returns immediately, potentially before the value is in the cache.
+    //!
+    //! @param  key         Value being read into the cache
+    //! @param  pValue      Where to put the value
+    //!
+    //! @note    This function must be overridden
+    virtual void readAsync( key_type const & key, value_type * pValue ) const = 0;
 
-	virtual void Write( Key const & key, Value const & value ) const = 0;
-
-	//! Returns an iterator pointing to the value in the cache with the lowest priority
-	//
-	//! @param	key		Value being inserted into the cache. The function uses this value to help
-	//!					determine which value to choose.
-	//!
-	//! @note	This function must be overridden
-
-	virtual typename Container::iterator Condemn( Key const & key ) = 0;
-
-	//! Retrieves a value from the dataset, but returns immediately, before the value is in the cache
-	//
-	//! @param	key			Value being read into the cache
-	//! @param	pElement	Where to put the value
-	//!
-	//! @note	This function must be overridden
-
-	virtual void AsyncRead( Key const & key, Value * pValue ) const = 0;
-
-	//! Waits for a value to be retrieved a from the dataset.
-	//
-	//! @param	key			Value being retrieved
-	//! @param	pElement	Where to put the value
-	//!
-	//! @note	This function must be overridden
-
-	virtual void WaitForAsyncRead( Key const & key, Value * pValue ) const = 0;
+    //! Waits for a value to be retrieved from the source via a previous readAsync call.
+    //!
+    //! @param  key         Value being retrieved
+    //! @param  pValue      Where to put the value
+    //!
+    //! @note    This function must be overridden
+    virtual void waitForAsyncRead( key_type const & key ) const = 0;
+#endif // defined(FEATURE_ASYNCHRONOUS)
 
 private:
 
-	// Retrieves a value from the cache, loading it from the dataset if necessary.
+    // Retrieves a value from the cache, loading it from the source if necessary.
+    Entry & get( key_type const & key )
+    {
+        typename Container::iterator p = container_.find( key );
 
-	Element & Get( Key const & key )
-	{
-		// Point to the value in the cache
+        // If the value is not in the cache, then it must be loaded now.
+        if ( p == container_.end())
+        {
+            p = insert(key, read(key));
+        }
+#if defined(FEATURE_ASYNCHRONOUS)
+        else
+        {
+            synchronize( key );
+        }
+#endif // defined(FEATURE_ASYNCHRONOUS)
 
-		typename Container::iterator	it			= m_Container.find( key );
-		Element &						element		= it->second;
+        return p->second;
+    }
 
-		// If the value is not in the cache, then it must be loaded now.
-		// Otherwise, if it was prefetched, wait for it.
+    // Removes an entry after writing back to the source if dirty
+    void purge( typename Container::iterator const & p )
+    {
+        // Make sure the source has been updated
+        flush( p );
 
-		if ( it == m_Container.end() )
-		{
-			Insert( key, Read( key ), false );
-		}
-		else
-		{
-			Synchronize( key, element );
-		}
+        // Remove it
+        container_.erase( p );
+    }
 
-		return element;
-	}
+    // Writes an entry back to the source if it is marked as dirty
+    void flush( typename Container::iterator const & p )
+    {
+        key_type const & key   = p->first;
+        Entry &          entry = p->second;
 
-	// Inserts a new element into the cache. Returns the container iterator to the inserted element.
+        // If the entry is dirty, write it out and mark it as not dirty.
+        if ( entry.dirty )
+        {
+            write( key, entry.value );
+            entry.dirty = false;
+        }
+    }
 
-	typename Container::iterator Insert( Key const & key, Value const & value, bool prefetched )
-	{
-		// Make sure there is enough room in the cache for the new value
+    // Inserts a new value into the cache. Returns the container iterator to the inserted entry.
+    typename Container::iterator insert( key_type const & key, value_type const & value) const
+    {
+        // Make sure there is enough room in the cache for the new value
+        if ( full( key ) )
+        {
+            purge( condemn( key ) );
+        }
 
-		if ( IsFull( key ) )
-		{
-			Discard( Condemn( key ) );
-		}
+        // Load the value into the cache
+        Entry entry{ value, false, false };
 
-		// Load the value into the cache
+        return container_.insert({ key, entry }).first;
+    }
 
-		Element const								e( false, false, prefetched, value );
-		typename Container::value_type const		cvt( key, e );
+#if defined(FEATURE_ASYNCHRONOUS)
+    // Inserts a new value into the cache. Returns the container iterator to the inserted entry.
+    typename Container::iterator insert( key_type const & key, value_type const & value, bool prefetched ) const
+    {
+        // Make sure there is enough room in the cache for the new value
+        if ( full( key ) )
+        {
+            purge( condemn( key ) );
+        }
 
-		return m_Container.insert( cvt ).first;
-	}
+        // Load the value into the cache
+        Entry entry{ false, false, prefetched, value };
 
-	// Discards an element
+        return container_.insert({ key, entry }).first;
+    }
 
-	void Discard( typename Container::iterator const & it )
-	{
-		Key const &		key			= it->first;
-		Element &		element		= it->second;
+    // Synchronizes an entry that is dirty or is being prefetched
+    void synchronize( key_type const & key )
+    {
+        Entry & entry = get(key);
+        assert(!entry.dirty || !entry.prefetched); // That would be bad
 
-		// If the element is being prefetched, then wait for it to be finished before erasing it.
+        if ( entry.prefetched )
+        {
+            waitForAsyncRead( key );
+            entry.prefetched = false;
+        }
+        else if (entry.dirty)
+        {
+            write( key, entry.value );
+            entry.dirty = false;
+        }
+    }
+#endif // defined(FEATURE_ASYNCHRONOUS)
 
-		Synchronize( key, element );
-
-		// Make sure the element is no longer dirty
-
-		Flush( it );
-
-		// Remove it
-
-		m_Container.erase( it );
-	}
-
-	// Synchronizes an element being prefetched
-
-	void Synchronize( Key const & key, Element & element )
-	{
-		if ( element.prefetched )
-		{
-			WaitForAsyncRead( key, &element.value );
-			element.dirty		= false;
-			element.prefetched	= false;
-		}
-	}
-
-	// Flushes an element
-
-	void Flush( typename Container::iterator const & it )
-	{
-		Key const &		key			= it->first;
-		Element &		element		= it->second;
-
-		// If the element is dirty, write it out and mark it as not dirty.
-		
-		if ( element.dirty )
-		{
-			Write( key, element.value );
-			element.dirty = false;
-		}
-	}
-
-	Container	m_Container;	// The underlying container
+    mutable Container    container_;    // The underlying container
 };
+
+#endif // !defined(CACHE_CACHE_H)
