@@ -1,23 +1,22 @@
 cmake_minimum_required (VERSION 3.10)
 project(Cache CXX)
 
-option(BUILD_SHARED_LIBS "Build libraries as DLLs" FALSE)
 set(${PROJECT_NAME}_DOXYGEN_OUTPUT_DIRECTORY "" CACHE PATH "Doxygen output directory (empty to disable)")
-
 if(${PROJECT_NAME}_DOXYGEN_OUTPUT_DIRECTORY)
     find_package(Doxygen)
     if(DOXYGEN_FOUND)
-        add_custom_target(doxygen ALL
-            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Doxyfile
-            ${DOXYGEN_EXECUTABLE}
-            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-            COMMENT "Generating API documentation with Doxygen" VERBATIM
-        )
+        set(DOXYGEN_OUTPUT_DIRECTORY ${${PROJECT_NAME}_DOXYGEN_OUTPUT_DIRECTORY})
+        configure_file(Doxyfile.in ${PROJECT_BINARY_DIR}/Doxyfile)
+        add_custom_target(doxygen ALL ${DOXYGEN_EXECUTABLE} ${PROJECT_BINARY_DIR}/Doxyfile
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+        COMMENT "Generating API documentation with Doxygen" VERBATIM
+            SOURCES ${PROJECT_BINARY_DIR}/Doxyfile
+    )
     endif(DOXYGEN_FOUND)
 endif()
 
-#set(Cache_VERSION_MAJOR 0)
-#set(Cache_VERSION_MINOR 1)
+#set(${PROJECT_NAME}_VERSION_MAJOR 0)
+#set(${PROJECT_NAME}_VERSION_MINOR 1)
 #configure_file("${PROJECT_SOURCE_DIR}/Version.h.in" "${PROJECT_BINARY_DIR}/Version.h")
 
 set(PUBLIC_INCLUDE_PATHS
